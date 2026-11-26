@@ -1,6 +1,5 @@
 /target/
 /.cargo/
-/.github/
 /.toolchain/
 .DS_Store
 *.mdb
