@@ -5,43 +5,64 @@ use jetdb::{
 use std::path::PathBuf;
 use std::process;
 
-/// 免驱动 Access (.mdb / .accdb) 数据库命令行检索工具
+const EXAMPLES: &str = "\
+Examples:
+  # 1. Search all tables and all fields (substring match, case-insensitive)
+  mdb-search SServda.accdb -q \"Fehler\" -i
+
+  # 2. Search specific fields (comma-separated or repeated -f) with exact match
+  mdb-search SServda.accdb -f Code,MNr -q 218 --exact
+  mdb-search SServda.accdb -f Code -f MNr -q 218 -e --full
+
+  # 3. Restrict search to specific table(s) and limit output to 20 matches
+  mdb-search SServda.accdb -t MeldungsTexte -f DE,EN -q \"bruch\" -i -n 20
+
+  # 4. Search a password-protected Access database
+  mdb-search protected.accdb -p \"secret\" -q \"1001\" -e";
+
 #[derive(Parser, Debug)]
-#[command(name = "mdb-search", version, about)]
+#[command(
+    name = "mdb-search",
+    version,
+    about = "Zero-dependency CLI tool to search values in Microsoft Access (.mdb / .accdb) databases",
+    after_help = EXAMPLES,
+    arg_required_else_help = true
+)]
 struct Cli {
-    /// Access 数据库文件路径 (.mdb 或 .accdb)
+    /// Path to the Access database file (.mdb or .accdb)
+    #[arg(value_name = "FILE")]
     database: PathBuf,
 
-    /// 要查找的数值或字符串
-    #[arg(short = 'q', long = "query")]
+    /// Value or string to search for
+    #[arg(short = 'q', long = "query", value_name = "VALUE")]
     query: String,
 
-    /// 指定要搜索的字段名（可省略，支持多次指定或逗号分隔，如: -f Code -f DE 或 -f Code,DE）
-    #[arg(short = 'f', long = "field", value_delimiter = ',')]
+    /// Field/column name(s) to search; omit to search all fields (repeatable or comma-separated)
+    #[arg(short = 'f', long = "field", value_delimiter = ',', value_name = "FIELDS")]
     fields: Vec<String>,
 
-    /// 仅在指定的数据表中搜索（可省略，支持多次指定或逗号分隔）
-    #[arg(short = 't', long = "table", value_delimiter = ',')]
+    /// Restrict search to specific table(s); omit to search all user tables (repeatable or comma-separated)
+    #[arg(short = 't', long = "table", value_delimiter = ',', value_name = "TABLES")]
     tables: Vec<String>,
 
-    /// 启用全匹配（默认为包含匹配）
+    /// Match the entire field value exactly (default: substring/contains match)
     #[arg(short = 'e', long = "exact")]
     exact: bool,
 
-    /// 忽略大小写（仅针对查找内容；字段名和表名默认不区分大小写）
+    /// Perform case-insensitive value matching (field and table names are always case-insensitive)
     #[arg(short = 'i', long = "ignore-case")]
     ignore_case: bool,
 
-    /// 打印命中记录的整行非空字段
+    /// Print all non-empty columns of each matched row
     #[arg(long = "full")]
     full: bool,
 
-    /// 限制最多输出的命中条数（0 表示不限制）
-    #[arg(short = 'n', long = "limit", default_value_t = 0)]
+    /// Maximum number of matched rows to display (0 = unlimited)
+    #[arg(short = 'n', long = "limit", default_value_t = 0, value_name = "COUNT")]
     limit: usize,
 
-    /// 加密数据库密码（如有）
-    #[arg(short = 'p', long = "password")]
+    /// Password for encrypted Access databases
+    #[arg(short = 'p', long = "password", value_name = "PASSWORD")]
     password: Option<String>,
 }
 
@@ -49,7 +70,7 @@ fn main() {
     let cli = Cli::parse();
 
     if let Err(err) = run(&cli) {
-        eprintln!("错误: {err}");
+        eprintln!("Error: {err}");
         process::exit(1);
     }
 }
@@ -87,12 +108,12 @@ fn run(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         let table_def = match read_table_def(&mut reader, &entry.name, entry.table_page) {
             Ok(def) => def,
             Err(e) => {
-                eprintln!("警告: 跳过无法解析结构的表 [{}]: {}", entry.name, e);
+                eprintln!("Warning: skipped table [{}] (failed to read schema): {}", entry.name, e);
                 continue;
             }
         };
 
-        // 确定需要扫描的列索引（0 个字段参数时扫描全部列）
+        // Determine target column indices (0 fields specified -> scan all columns)
         let col_indices: Vec<usize> = if target_fields.is_empty() {
             (0..table_def.columns.len()).collect()
         } else {
@@ -105,7 +126,7 @@ fn run(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                 .collect()
         };
 
-        // 若指定了字段名且当前表不包含任意一个指定字段，直接跳过读行
+        // Skip reading rows if none of the requested fields exist in this table
         if col_indices.is_empty() {
             continue;
         }
@@ -115,7 +136,7 @@ fn run(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         let result = match read_table_rows(&mut reader, &table_def) {
             Ok(res) => res,
             Err(e) => {
-                eprintln!("警告: 读取表 [{}] 数据失败: {}", entry.name, e);
+                eprintln!("Warning: failed to read rows from table [{}]: {}", entry.name, e);
                 continue;
             }
         };
@@ -139,7 +160,7 @@ fn run(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 
             if !row_hits.is_empty() {
                 total_matches += 1;
-                print!("[{}] 行 #{}: ", entry.name, row_idx + 1);
+                print!("[{}] Row #{}: ", entry.name, row_idx + 1);
                 let hit_summary: Vec<String> = row_hits
                     .iter()
                     .map(|(k, v)| format!("{k} = {v}"))
@@ -157,12 +178,12 @@ fn run(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                                 .map(|v| format!("{}={}", col.name, v))
                         })
                         .collect();
-                    println!("    整行: {}", full_cols.join(" | "));
+                    println!("    Full row: {}", full_cols.join(" | "));
                 }
 
                 if cli.limit > 0 && total_matches >= cli.limit {
                     println!(
-                        "\n--- 已达输出上限 ({})，共扫描 {} 张表 ---",
+                        "\n--- Reached output limit ({}) after scanning {} table(s) ---",
                         cli.limit, scanned_tables
                     );
                     return Ok(());
@@ -172,7 +193,7 @@ fn run(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!(
-        "\n--- 搜索完成：共扫描 {} 张表，命中 {} 条记录 ---",
+        "\n--- Search complete: scanned {} table(s), found {} match(es) ---",
         scanned_tables, total_matches
     );
     Ok(())
@@ -215,7 +236,7 @@ fn value_to_string(val: &Value) -> Option<String> {
     }
 }
 
-/// 将 OLE Automation Date (1899-12-30 起的天数) 转为可读日期时间
+/// Format OLE Automation Date (days since 1899-12-30) into YYYY-MM-DD[ HH:MM:SS]
 fn format_ole_date(days: f64) -> String {
     if !days.is_finite() {
         return days.to_string();
@@ -227,7 +248,7 @@ fn format_ole_date(days: f64) -> String {
         whole_days += if days >= 0.0 { 1 } else { -1 };
     }
 
-    // 1899-12-30 到 1970-01-01 相差 25569 天
+    // Days between 1899-12-30 and Unix epoch 1970-01-01 = 25569
     let (year, month, day) = civil_from_days(whole_days - 25_569);
     if total_secs == 0 {
         format!("{year:04}-{month:02}-{day:02}")
