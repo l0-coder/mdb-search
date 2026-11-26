@@ -1,0 +1,16 @@
+[package]
+name = "mdb-search"
+version = "0.1.0"
+edition = "2021"
+description = "Zero-dependency CLI tool to search values in .mdb / .accdb Access databases"
+
+[dependencies]
+jetdb = "0.4"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+opt-level = "s"       # 优化体积，单 EXE 更小
+lto = true            # 链接时优化
+codegen-units = 1
+strip = true          # 移除调试符号
+panic = "abort"
